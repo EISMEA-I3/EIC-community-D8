@@ -35,6 +35,9 @@
     "drupal/components": {
       "3299045 - Ignore duplicate templates warnings": "patches/components/3299045-ignore_duplicate_template_warnings.patch"
     },
+    "drupal/context": {
+      "3268903 - Custom IDs for Contexts": "https://git.drupalcode.org/project/context/-/merge_requests/23.diff"
+    },
     "drupal/default_content": {
       "2698425 - Do not reimport existing entities": "https://www.drupal.org/files/issues/2021-01-20/default_content-integrity_constrait_violation-3162987-137-2.0.x.patch"
     },
