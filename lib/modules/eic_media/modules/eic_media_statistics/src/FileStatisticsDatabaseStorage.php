@@ -71,6 +71,10 @@ class FileStatisticsDatabaseStorage implements StatisticsStorageInterface {
    * {@inheritdoc}
    */
   public function fetchViews($ids) {
+    if (empty($ids)) {
+      return [];
+    }
+
     $views = $this->connection
       ->select('file_counter', 'fc')
       ->fields('fc', ['totalcount', 'daycount', 'timestamp'])
