@@ -159,7 +159,8 @@
     "extra": {
         "merge-plugin": {
             "require": [
-                "composer.libraries.json"
+                "composer.libraries.json",
+                "composer.custom.json"
             ],
             "recurse": true,
             "replace": false,
