@@ -1,0 +1,13 @@
+diff --git a/core/modules/media/src/Plugin/Field/FieldFormatter/OEmbedFormatter.php b/core/modules/media/src/Plugin/Field/FieldFormatter/OEmbedFormatter.php
+index 1234567..abcdefg 100644
+--- a/core/modules/media/src/Plugin/Field/FieldFormatter/OEmbedFormatter.php
++++ b/core/modules/media/src/Plugin/Field/FieldFormatter/OEmbedFormatter.php
+@@ -195,7 +195,7 @@ class OEmbedFormatter extends FormatterBase {
+       }
+       else {
+         $url = Url::fromRoute('media.oembed_iframe', [], [
+-          'absolute' => TRUE,
++          'absolute' => FALSE,
+           'query' => [
+             'url' => $value,
+             'max_width' => $max_width,
