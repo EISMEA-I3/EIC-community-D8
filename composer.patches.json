@@ -114,9 +114,6 @@
     "drupal/aws_sqs" : {
       "EIC - Adaptations": "patches/aws_sqs/eic-adaptations.patch",
       "3367429 - Drupal 10 compatibility": "https://www.drupal.org/files/issues/2025-02-21/3367429-11-drupal-10-compatibility.patch"
-    },
-    "drupal/access_unpublished": {
-      "3421309 - Fix Unable to save 'Access Unpublished' settings form due to TypeError in Drupal\\Core\\Render\\Element::children()": "https://www.drupal.org/files/issues/2024-07-29/access_unpublished-n3421309-14.patch"
     }
   }
 }
