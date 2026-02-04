@@ -114,6 +114,9 @@
     "drupal/aws_sqs" : {
       "EIC - Adaptations": "patches/aws_sqs/eic-adaptations.patch",
       "3367429 - Drupal 10 compatibility": "https://www.drupal.org/files/issues/2025-02-21/3367429-11-drupal-10-compatibility.patch"
+    },
+    "drupal/node_read_time": {
+      "3389105 - Warning: Undefined array key": "https://www.drupal.org/files/issues/2023-09-22/warning-undefined-array-key-3389105-1.patch"
     }
   }
 }
