@@ -235,3 +235,5 @@ $config['eic_projects.settings']['api_key'] = getenv('CORDIS_API_KEY');
 // Enable config-split for DEV only
 if (getenv("SENTRY_ENVIRONMENT") == "dev")
   $config['config_split.config_split.development']['status'] = TRUE;
+
+$_SERVER['HTTPS'] = 'on';
