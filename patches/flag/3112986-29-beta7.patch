@@ -1,0 +1,503 @@
+diff --git a/config/schema/flag.schema.yml b/config/schema/flag.schema.yml
+index ca5845b..5a6795a 100644
+--- a/config/schema/flag.schema.yml
++++ b/config/schema/flag.schema.yml
+@@ -43,6 +43,15 @@ flag.flag.*:
+     unflag_denied_text:
+       type: label
+       label: 'Unflag denied text'
++    flood_control_active:
++      type: boolean
++      label: 'Whether flood control for the flag is active'
++    flood_control_limit:
++      type: integer
++      label: 'Limit of usages for the flag'
++    flood_control_window:
++      type: integer
++      label: 'Time unit for the flag'
+     weight:
+       type: integer
+       label: 'Weight'
+diff --git a/flag.install b/flag.install
+index 4c2e16a..28bca99 100644
+--- a/flag.install
++++ b/flag.install
+@@ -137,3 +137,18 @@ function flag_update_8401() {
+   $field_schema['flagging']['indexes']['flagging_field__flag_id__target_id'] = ['flag_id'];
+   $kv->get($kv_collection)->set($kv_name, $field_schema);
+ }
++
++/**
++ * Set default flood control settings on all flags.
++ */
++function flag_update_8402() {
++  if ($flags = \Drupal::entityTypeManager()->getStorage('flag')->loadMultiple()) {
++    foreach ($flags as $flag) {
++      // Turn off flood control by default.
++      $flag->setFloodControlActive(FALSE);
++      $flag->setFloodControlLimit(0);
++      $flag->setFloodControlWindow(0);
++      $flag->save();
++    }
++  }
++}
+diff --git a/flag.permissions.yml b/flag.permissions.yml
+index f0fdc1b..c7c37fd 100644
+--- a/flag.permissions.yml
++++ b/flag.permissions.yml
+@@ -6,6 +6,10 @@ administer flaggings:
+   title: 'Administer Flaggings'
+   description: 'Delete flaggings for all users.'
+   restrict access: TRUE
++bypass flagging flood control:
++  title: 'Bypass the flagging flood control'
++  description: 'Bypass the flagging flood control'
++  restrict access: TRUE
+ 
+ permission_callbacks:
+   - Drupal\flag\Permissions\FlagPermissions::permissions
+diff --git a/flag.services.yml b/flag.services.yml
+index 321a9a8..2b38b39 100644
+--- a/flag.services.yml
++++ b/flag.services.yml
+@@ -31,3 +31,9 @@ services:
+     class: Drupal\flag\TwigExtension\FlagCount
+     tags:
+       - { name: twig.extension }
++  flag.flood_control:
++    class: Drupal\flag\Service\FlagFloodControlService
++    arguments:
++      - '@entity_type.manager'
++      - '@current_user'
++      - '@flood'
+diff --git a/src/ActionLink/ActionLinkTypeBase.php b/src/ActionLink/ActionLinkTypeBase.php
+index 1e5bb13..aff3cdf 100644
+--- a/src/ActionLink/ActionLinkTypeBase.php
++++ b/src/ActionLink/ActionLinkTypeBase.php
+@@ -13,6 +13,7 @@ use Drupal\Core\Plugin\ContainerFactoryPluginInterface;
+ use Drupal\Core\Session\AccountInterface;
+ use Drupal\Core\StringTranslation\StringTranslationTrait;
+ use Drupal\flag\FlagInterface;
++use Drupal\flag\Service\FlagFloodControlServiceInterface;
+ use Symfony\Component\DependencyInjection\ContainerInterface;
+ 
+ /**
+@@ -31,6 +32,13 @@ abstract class ActionLinkTypeBase extends PluginBase implements ActionLinkTypePl
+    */
+   protected $currentUser;
+ 
++  /**
++   * The flag control servce.
++   *
++   * @var \Drupal\flag\Service\FlagFloodControlServiceInterface
++   */
++  protected $floodControl;
++
+   use StringTranslationTrait;
+   use RedirectDestinationTrait;
+ 
+@@ -45,11 +53,14 @@ abstract class ActionLinkTypeBase extends PluginBase implements ActionLinkTypePl
+    *   The plugin definition array.
+    * @param \Drupal\Core\Session\AccountInterface $current_user
+    *   The current user.
++   * @param \Drupal\flag\Service\FlagFloodControlServiceInterface $flood_control
++   *   The flood control service.
+    */
+-  public function __construct(array $configuration, $plugin_id, array $plugin_definition, AccountInterface $current_user) {
++  public function __construct(array $configuration, $plugin_id, array $plugin_definition, AccountInterface $current_user, FlagFloodControlServiceInterface $flood_control) {
+     parent::__construct($configuration, $plugin_id, $plugin_definition);
+     $this->configuration += $this->defaultConfiguration();
+     $this->currentUser = $current_user;
++    $this->floodControl = $flood_control;
+   }
+ 
+   /**
+@@ -60,7 +71,8 @@ abstract class ActionLinkTypeBase extends PluginBase implements ActionLinkTypePl
+       $configuration,
+       $plugin_id,
+       $plugin_definition,
+-      $container->get('current_user')
++      $container->get('current_user'),
++      $container->get('flag.flood_control')
+     );
+   }
+ 
+@@ -98,7 +110,7 @@ abstract class ActionLinkTypeBase extends PluginBase implements ActionLinkTypePl
+     $action = $this->getAction($flag, $entity);
+     $access = $flag->actionAccess($action, $this->currentUser, $entity);
+ 
+-    if ($access->isAllowed()) {
++    if ($access->isAllowed() && $this->floodControl->allowed($flag->id())) {
+       $url = $this->getUrl($action, $flag, $entity);
+       $url->setRouteParameter('destination', $this->getDestination());
+       $render = [
+diff --git a/src/Entity/Flag.php b/src/Entity/Flag.php
+index 454058c..6f29033 100644
+--- a/src/Entity/Flag.php
++++ b/src/Entity/Flag.php
+@@ -52,6 +52,9 @@ use Drupal\flag\FlagInterface;
+  *     "unflag_long",
+  *     "unflag_message",
+  *     "unflag_denied_text",
++ *     "flood_control_active",
++ *     "flood_control_limit",
++ *     "flood_control_window",
+  *     "flag_type",
+  *     "link_type",
+  *     "flagTypeConfig",
+@@ -194,6 +197,27 @@ class Flag extends ConfigEntityBundleBase implements FlagInterface {
+    */
+   protected $weight = 0;
+ 
++  /**
++   * Set the flag's active state for flood control.
++   *
++   * @var bool
++   */
++  protected $flood_control_active;
++
++  /**
++   * Set the flag's limit for flood control.
++   *
++   * @var int
++   */
++  protected $flood_control_limit;
++
++  /**
++   * Set the flag's window for flood control.
++   *
++   * @var int
++   */
++  protected $flood_control_window;
++
+   /**
+    * {@inheritdoc}
+    */
+@@ -453,6 +477,48 @@ class Flag extends ConfigEntityBundleBase implements FlagInterface {
+     $this->weight = $weight;
+   }
+ 
++  /**
++   * {@inheritdoc}
++   */
++  public function getFloodControlActive() {
++    return $this->flood_control_active;
++  }
++
++  /**
++   * {@inheritdoc}
++   */
++  public function setFloodControlActive($flood_control_active) {
++    $this->flood_control_active = $flood_control_active;
++  }
++
++  /**
++   * {@inheritdoc}
++   */
++  public function getFloodControlLimit() {
++    return $this->flood_control_limit;
++  }
++
++  /**
++   * {@inheritdoc}
++   */
++  public function setFloodControlLimit($flood_control_limit) {
++    $this->flood_control_limit = $flood_control_limit;
++  }
++
++  /**
++   * {@inheritdoc}
++   */
++  public function getFloodControlWindow() {
++    return $this->flood_control_window;
++  }
++
++  /**
++   * {@inheritdoc}
++   */
++  public function setFloodControlWindow($flood_control_window) {
++    $this->flood_control_window = $flood_control_window;
++  }
++
+   /**
+    * {@inheritdoc}
+    */
+diff --git a/src/Entity/Flagging.php b/src/Entity/Flagging.php
+index c08bf5a..7b4aa7d 100644
+--- a/src/Entity/Flagging.php
++++ b/src/Entity/Flagging.php
+@@ -196,6 +196,7 @@ class Flagging extends ContentEntityBase implements FlaggingInterface {
+     if (!$update) {
+       \Drupal::service('event_dispatcher')->dispatch(new FlaggingEvent($this), FlagEvents::ENTITY_FLAGGED);
+     }
++    \Drupal::service('flag.flood_control')->register($this->getFlagId());
+   }
+ 
+   /**
+diff --git a/src/FlagInterface.php b/src/FlagInterface.php
+index 9c2925f..7b356dc 100644
+--- a/src/FlagInterface.php
++++ b/src/FlagInterface.php
+@@ -248,6 +248,54 @@ interface FlagInterface extends ConfigEntityInterface, EntityWithPluginCollectio
+    */
+   public function setWeight($weight);
+ 
++  /**
++   * Get the flag's active state for flood control.
++   *
++   * @return bool
++   *   The flag's active state for flood control.
++   */
++  public function getFloodControlActive();
++
++  /**
++   * Set the flag's active state for flood control.
++   *
++   * @param bool $flood_control_active
++   *   An active state for flood control to use.
++   */
++  public function setFloodControlActive($flood_control_active);
++
++  /**
++   * Get the flag's limit control for flood control.
++   *
++   * @return int
++   *   The flag's limit for flood control.
++   */
++  public function getFloodControlLimit();
++
++  /**
++   * Set the flag's limit for flood control.
++   *
++   * @param int $flood_control_limit
++   *   An int containing the flag limit to use.
++   */
++  public function setFloodControlLimit($flood_control_limit);
++
++  /**
++   * Get the flag's window control for flood control.
++   *
++   * @return int
++   *   The flag's window for flood control.
++   */
++  public function getFloodControlWindow();
++
++  /**
++   * Set the flag's window for flood control.
++   *
++   * @param int $flood_control_window
++   *   An int containing the flag window to use.
++   */
++  public function setFloodControlWindow($flood_control_window);
++
+   /**
+    * Get the flag's unflag denied message text.
+    *
+diff --git a/src/Form/FlagFormBase.php b/src/Form/FlagFormBase.php
+index 2258013..3003037 100644
+--- a/src/Form/FlagFormBase.php
++++ b/src/Form/FlagFormBase.php
+@@ -201,6 +201,30 @@ abstract class FlagFormBase extends EntityForm {
+       '#weight' => -1,
+     ];
+ 
++    $form['flood_control'] = [
++      '#type' => 'details',
++      '#open' => TRUE,
++      '#title' => $this->t('Flood control'),
++    ];
++
++    $form['flood_control']['flood_control_active'] = [
++      '#type' => 'checkbox',
++      '#title' => $this->t('Enable flood control for this flag'),
++      '#default_value' => (int) $flag->getFloodControlActive(),
++    ];
++
++    $form['flood_control']['flood_control_limit'] = [
++      '#type' => 'number',
++      '#title' => $this->t("Number of flaggings per time window"),
++      '#default_value' => (int) $flag->getFloodControlLimit(),
++    ];
++
++    $form['flood_control']['flood_control_window'] = [
++      '#type' => 'number',
++      '#title' => $this->t("Time window in seconds"),
++      '#default_value' => (int) $flag->getFloodControlWindow(),
++    ];
++
+     $form['display'] = [
+       '#type' => 'details',
+       '#open' => TRUE,
+diff --git a/src/Plugin/ActionLink/AJAXactionLink.php b/src/Plugin/ActionLink/AJAXactionLink.php
+index 58c844d..2eec13c 100644
+--- a/src/Plugin/ActionLink/AJAXactionLink.php
++++ b/src/Plugin/ActionLink/AJAXactionLink.php
+@@ -4,6 +4,7 @@ namespace Drupal\flag\Plugin\ActionLink;
+ 
+ use Drupal\Core\Entity\EntityInterface;
+ use Drupal\flag\FlagInterface;
++use Drupal\flag\Service\FlagFloodControlServiceInterface;
+ use Symfony\Component\DependencyInjection\ContainerInterface;
+ use Drupal\Core\Session\AccountInterface;
+ use Symfony\Component\HttpFoundation\Request;
+@@ -40,11 +41,13 @@ class AJAXactionLink extends Reload {
+    *   The plugin definition array.
+    * @param \Drupal\Core\Session\AccountInterface $current_user
+    *   The current user.
++   * @param \Drupal\flag\Service\FlagFloodControlServiceInterface $flood_control
++   *   The flood control service.
+    * @param \Symfony\Component\HttpFoundation\Request $request
+    *   The current request from the request stack.
+    */
+-  public function __construct(array $configuration, $plugin_id, array $plugin_definition, AccountInterface $current_user, Request $request) {
+-    parent::__construct($configuration, $plugin_id, $plugin_definition, $current_user);
++  public function __construct(array $configuration, $plugin_id, array $plugin_definition, AccountInterface $current_user, FlagFloodControlServiceInterface $flood_control, Request $request) {
++    parent::__construct($configuration, $plugin_id, $plugin_definition, $current_user, $flood_control);
+     $this->request = $request;
+   }
+ 
+@@ -57,6 +60,7 @@ class AJAXactionLink extends Reload {
+       $plugin_id,
+       $plugin_definition,
+       $container->get('current_user'),
++      $container->get('flag.flood_control'),
+       $container->get('request_stack')->getCurrentRequest()
+     );
+   }
+diff --git a/src/Service/FlagFloodControlService.php b/src/Service/FlagFloodControlService.php
+new file mode 100644
+index 0000000..4653512
+--- /dev/null
++++ b/src/Service/FlagFloodControlService.php
+@@ -0,0 +1,85 @@
++<?php
++
++namespace Drupal\flag\Service;
++
++use Drupal\Core\Entity\EntityTypeManagerInterface;
++use Drupal\Core\Flood\FloodInterface;
++use Drupal\Core\Session\AccountInterface;
++
++/**
++ * A service class for sending notifications of private messages.
++ */
++class FlagFloodControlService implements FlagFloodControlServiceInterface {
++
++  /**
++   * The currently logged in user.
++   *
++   * @var \Drupal\Core\Session\AccountInterface
++   */
++  protected $currentUser;
++
++  /**
++   * The entity type manager.
++   *
++   * @var \Drupal\Core\Entity\EntityFieldManagerInterface
++   */
++  protected $entityTypeManager;
++
++  /**
++   * The flood service.
++   *
++   * @var \Drupal\Core\Flood\FloodInterface
++   */
++  protected $flood;
++
++  /**
++   * CommentPager constructor.
++   *
++   * @param \Drupal\Core\Entity\EntityTypeManagerInterface $entityTypeManager
++   *   Entity type manager.
++   * @param \Drupal\Core\Session\AccountInterface $currentUser
++   *   The currently logged in user.
++   * @param \Drupal\Core\Flood\FloodInterface $flood
++   *   The flood control service.
++   */
++  public function __construct(
++    EntityTypeManagerInterface $entityTypeManager,
++    AccountInterface $currentUser,
++    FloodInterface $flood
++  ) {
++    $this->entityTypeManager = $entityTypeManager;
++    $this->currentUser = $entityTypeManager->getStorage('user')
++      ->load($currentUser->id());
++    $this->flood = $flood;
++  }
++
++  /**
++   * {@inheritdoc}
++   */
++  public function allowed($flagId) {
++    $flag = $this->entityTypeManager->getStorage('flag')->load($flagId);
++    $identifier = $this->createIdentifier($flagId);
++    return !$flag->getFloodControlActive() ||
++      $this->flood->isAllowed('flag.flagging', $flag->getFloodControlLimit(), $flag->getFloodControlWindow(), $identifier) ||
++      $this->currentUser->hasPermission('bypass flagging flood control');
++  }
++
++  /**
++   * {@inheritdoc}
++   */
++  public function register($flagId) {
++    $flag = $this->entityTypeManager->getStorage('flag')->load($flagId);
++    if ($flag->getFloodControlActive()) {
++      $identifier = $this->createIdentifier($flagId);
++      $this->flood->register('flag.flagging', $flag->getFloodControlWindow(), $identifier);
++    }
++  }
++
++  /**
++   * {@inheritdoc}
++   */
++  public function createIdentifier($flagId) {
++    return $this->currentUser->id() . '-' . $flagId;
++  }
++
++}
+diff --git a/src/Service/FlagFloodControlServiceInterface.php b/src/Service/FlagFloodControlServiceInterface.php
+new file mode 100644
+index 0000000..d0b21a7
+--- /dev/null
++++ b/src/Service/FlagFloodControlServiceInterface.php
+@@ -0,0 +1,40 @@
++<?php
++
++namespace Drupal\flag\Service;
++
++/**
++ * Interface for the Private Message notification service.
++ */
++interface FlagFloodControlServiceInterface {
++
++  /**
++   * Checks is the current user is allowed to use a flag.
++   *
++   * @param int $flagId
++   *   The id of the flag.
++   *
++   * @return bool
++   *   True if allowed, false if not.
++   */
++  public function allowed($flagId);
++
++  /**
++   * Registers the current user to the flood api for a flag.
++   *
++   * @param int $flagId
++   *   The id of the flag.
++   */
++  public function register($flagId);
++
++  /**
++   * Returns an identifier based on the current user and flag id.
++   *
++   * @param int $flagId
++   *   The id of the flag.
++   *
++   * @return string
++   *   The constructed identifier.
++   */
++  public function createIdentifier($flagId);
++
++}
