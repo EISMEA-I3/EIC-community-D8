@@ -19,24 +19,32 @@ RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false upd
 #Install dependencies for cypress
 RUN apt-get -y install libgtk2.0-0t64 libgtk-3-0t64 libgbm-dev libnotify-dev libnss3 libxss1 libasound2t64 libxtst6 xauth xvfb
 
-# Install extensions
-RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
+ARG REDIS_VERSION=6.3.0
+ARG APCU_VERSION=5.1.28
+
+# Install extensions. Redis and APCu are built from GitHub sources because
+# pecl.php.net is unreliable and has broken builds.
+RUN docker-php-source extract \
+  && mkdir -p /usr/src/php/ext/redis /usr/src/php/ext/apcu \
+  && curl -fsSL https://github.com/phpredis/phpredis/archive/refs/tags/${REDIS_VERSION}.tar.gz \
+    | tar -xz -C /usr/src/php/ext/redis --strip-components=1 \
+  && curl -fsSL https://github.com/krakjoe/apcu/archive/refs/tags/v${APCU_VERSION}.tar.gz \
+    | tar -xz -C /usr/src/php/ext/apcu --strip-components=1 \
+  && docker-php-ext-configure gd --with-freetype --with-jpeg \
   && docker-php-ext-install gd \
   && docker-php-ext-install bcmath \
   && docker-php-ext-install zip \
   && docker-php-ext-install opcache \
-  && pecl install -o -f redis \
-  && docker-php-ext-enable redis \
+  && docker-php-ext-install redis \
+  && docker-php-ext-install apcu \
   && docker-php-ext-configure intl \
   && docker-php-ext-install intl \
-  && docker-php-ext-install xml
+  && docker-php-ext-install xml \
+  && docker-php-source delete
 
 RUN apt-get update -y \
     && apt-get install mariadb-client -y \
-    && pecl install apcu \
-    && docker-php-ext-install pdo_mysql \
-    && docker-php-ext-enable apcu \
-    && pecl clear-cache
+    && docker-php-ext-install pdo_mysql
 
 # Change the fpm user
 RUN groupadd -o -g ${GID} web \
