@@ -1,4 +1,4 @@
-ARG PHP_VERSION=8.1
+ARG PHP_VERSION=8.3.36
 ARG COMPOSER_VERSION=2
 
 FROM composer:${COMPOSER_VERSION} AS composer
@@ -31,12 +31,12 @@ RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
   && docker-php-ext-install intl \
   && docker-php-ext-install xml
 
-RUN apt-get update -y; \
-    apt-get install mariadb-client -y; \
-    pecl install apcu; \
-    docker-php-ext-install pdo_mysql; \
-    docker-php-ext-enable apcu; \
-    pecl clear-cache;
+RUN apt-get update -y \
+    && apt-get install mariadb-client -y \
+    && pecl install apcu \
+    && docker-php-ext-install pdo_mysql \
+    && docker-php-ext-enable apcu \
+    && pecl clear-cache
 
 # Change the fpm user
 RUN groupadd -o -g ${GID} web \
